@@ -1,0 +1,43 @@
+# Custom voice agent files
+customvoiceagent/
+
+# Piper TTS
+piper/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Python cache
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# SQLite database files
+*.sqlite
+*.sqlite3
+*.db
+
+# Batch files
+*.bat
+
+# Node.js dependencies
+**/node_modules/
+**/piper/
+
+# Next.js
+voice-assistant-nextjs/public/
+voice-assistant-nextjs/.next/
+voice-assistant-nextjs/out/
+voice-assistant-nextjs/build/
+voice-assistant-nextjs/.env*.local
+
+# Log files
+**/*.log
+**/logs/
+*.log
+log/
+logs/

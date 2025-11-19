@@ -1,0 +1,8 @@
+fastapi[standard]
+faster_whisper
+torch
+
+# Testing Dependencies
+aiohttp==3.9.1
+numpy
+uvicorn

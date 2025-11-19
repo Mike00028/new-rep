@@ -1,0 +1,152 @@
+services:
+  # Nginx - Reverse proxy with HTTPS
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./customvoiceagent:/etc/nginx/certs:ro
+    depends_on:
+      - frontend
+      - stt-server
+      - tts-server
+      - llm-server
+    restart: unless-stopped
+    networks:
+      - voice-assistant-network
+
+  # STT Service - Speech to Text
+  stt-server:
+    build:
+      context: ./stt-server
+      dockerfile: Dockerfile
+    container_name: stt-server
+    expose:
+      - "5200"
+    environment:
+      - FORCE_CPU=false  # Set to true if no GPU
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+    restart: unless-stopped
+    networks:
+      - voice-assistant-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5200/info')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # TTS Service - Text to Speech
+  tts-server:
+    build:
+      context: ./tts-server
+      dockerfile: Dockerfile
+    container_name: tts-server
+    expose:
+      - "5100"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    restart: unless-stopped
+    networks:
+      - voice-assistant-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5100/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # LLM Service - Language Model
+  llm-server:
+    build:
+      context: ./llm-server
+      dockerfile: Dockerfile
+    container_name: llm-server
+    expose:
+      - "11435"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434  # Access host's Ollama
+    volumes:
+      - llm-data:/app/conversations  # Persist conversation history
+      - ./llm-server/conversations.db:/app/conversations.db  # Persist SQLite DB
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+    restart: unless-stopped
+    networks:
+      - voice-assistant-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Allow access to host machine
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:11435/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Frontend - Next.js UI
+  frontend:
+    build:
+      context: ./voice-assistant-nextjs
+      dockerfile: Dockerfile
+    container_name: frontend
+    expose:
+      - "3000"
+    environment:
+      - NEXT_PUBLIC_FAST_WHISPER_URL=/api/stt/v1/transcriptions
+      - NEXT_PUBLIC_LLM_SERVER_URL=/api/llm/chat/
+      - NEXT_PUBLIC_PIPER_TTS_URL=/api/tts/synthesize/
+      - NEXT_PUBLIC_MODEL_NAME=llama3.2
+      - NEXT_PUBLIC_SESSION_CREATE_URL=/api/llm/session/create
+      - NEXT_PUBLIC_SESSION_DELETE_URL=/api/llm/session
+      - NEXT_PUBLIC_BASE_URL=https://localhost
+    depends_on:
+      - stt-server
+      - tts-server
+      - llm-server
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    restart: unless-stopped
+    networks:
+      - voice-assistant-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  voice-assistant-network:
+    driver: bridge
+
+volumes:
+  llm-data:
+    driver: local

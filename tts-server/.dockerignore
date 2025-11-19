@@ -1,0 +1,15 @@
+# Exclude large model files we don't need in Docker
+voice_samples/hi_IN-*.onnx
+voice_samples/hi_IN-*.json
+voice_samples/te_IN-*.onnx
+voice_samples/te_IN-*.json
+voice_samples/*.mp3
+
+# Exclude other unnecessary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.gitignore
+README.md
