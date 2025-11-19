@@ -2,6 +2,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import { AudioQueue } from "@/lib/audioQueue";
+import { sanitizeForTTS } from "@/lib/textSanitizer";
 import ConversationPanel from "./ConversationPanel";
 import { 
   transcribeAudio, 
@@ -12,6 +13,15 @@ import {
   deleteSession,
   type Message as ApiMessage 
 } from "@/lib/apiService";
+
+// TEMP workaround: Some build environments failing to pick up JSX intrinsic element types.
+// This fallback keeps compilation moving; remove once underlying TS/React type resolution fixed.
+declare global {
+  namespace JSX {
+    interface IntrinsicElements {
+      div: any; span: any; p: any; h1: any; svg: any; path: any; circle: any; button: any; select: any; option: any; style: any; }
+  }
+}
 
 declare global {
   interface Window {
@@ -72,17 +82,81 @@ const TEST_MESSAGES: Message[] = [
 export default function VoiceAssistant() {
   const [isListening, setIsListening] = useState(false);
   const [status, setStatus] = useState<Status>("idle");
-  const [messages, setMessages] = useState<Message[]>(TEST_MESSAGES); // Load test messages
+  const [messages, setMessages] = useState<Message[]>([]) ; // Load test messages
   const [language, setLanguage] = useState("en");
   const [isVadReady, setIsVadReady] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isMounted, setIsMounted] = useState(false);
+  // VAD responsiveness preset: affects end-of-speech detection latency; 'adaptive' auto-selects a preset
+  const [vadMode, setVadMode] = useState<'adaptive' | 'ultra' | 'fast' | 'balanced' | 'reliable'>('balanced');
+  const [adaptiveEffectiveMode, setAdaptiveEffectiveMode] = useState<'ultra' | 'fast' | 'balanced' | 'reliable'>('balanced');
+  const graceMs = 150; // extra capture after VAD end to avoid clipping final phoneme
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const graceRecorderRef = useRef<MediaRecorder | null>(null);
+  const graceChunksRef = useRef<Blob[]>([]);
+  const isCapturingRef = useRef<boolean>(false);
+
+  // Lazy init microphone stream for grace buffer capture
+  const ensureMediaStream = async () => {
+    if (mediaStreamRef.current) return mediaStreamRef.current;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      return stream;
+    } catch (err) {
+      console.warn('[GraceCapture] Failed to access microphone for grace buffer:', err);
+      return null;
+    }
+  };
+
+  // Capture small grace buffer after VAD end
+  const captureGraceBuffer = async (): Promise<Float32Array | null> => {
+    const stream = await ensureMediaStream();
+    if (!stream) return null;
+    return new Promise((resolve) => {
+      try {
+        graceChunksRef.current = [];
+        const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+        graceRecorderRef.current = recorder;
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) graceChunksRef.current.push(e.data);
+        };
+        recorder.onstop = async () => {
+          try {
+            const blob = new Blob(graceChunksRef.current, { type: 'audio/webm' });
+            const arrayBuf = await blob.arrayBuffer();
+            // Decode using AudioContext to get PCM float
+            const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const decoded = await audioCtx.decodeAudioData(arrayBuf);
+            const channelData = decoded.getChannelData(0);
+            resolve(new Float32Array(channelData));
+          } catch (e) {
+            console.warn('[GraceCapture] decode failed', e);
+            resolve(null);
+          }
+        };
+        recorder.start();
+        setTimeout(() => {
+          if (recorder.state !== 'inactive') recorder.stop();
+        }, graceMs);
+      } catch (e) {
+        console.warn('[GraceCapture] recorder init failed', e);
+        resolve(null);
+      }
+    });
+  };
 
   const vadRef = useRef<VadInstance | null>(null);
   const audioQueueRef = useRef<AudioQueue>(new AudioQueue());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isListeningRef = useRef<boolean>(false); // Track listening state in ref for callbacks
   const isProcessingRef = useRef<boolean>(false); // Prevent multiple simultaneous processing
+  const ttsCancelledRef = useRef<boolean>(false); // Track if user canceled TTS mid-stream
+  const streamingCancelledRef = useRef<boolean>(false); // Track if chat stream should abort
+  const streamAbortRef = useRef<AbortController | null>(null); // AbortController for LLM streaming
+  // Adaptive metrics
+  const lastSpeechStartRef = useRef<number | null>(null);
+  const interruptionTimestampsRef = useRef<number[]>([]);
 
   // Set mounted state after hydration
   useEffect(() => {
@@ -128,7 +202,23 @@ export default function VoiceAssistant() {
   // Generate and queue TTS
   const generateAndQueueTTS = useCallback(async (text: string) => {
     try {
-      const audioBlob = await synthesizeSpeech(text, language);
+      // If user cancelled TTS, don't generate new audio
+      if (ttsCancelledRef.current) {
+        console.log('[TTS] Skipping generation because cancellation flag is set');
+        return;
+      }
+      if (audioQueueRef.current.isStopped()) {
+        console.log('[TTS] Skipping generation because audio queue is in stopped state');
+        return;
+      }
+      // Sanitize markdown / formatting artifacts before sending to TTS
+      const sanitized = sanitizeForTTS(text);
+      const audioBlob = await synthesizeSpeech(sanitized, language);
+      // Re-check cancellation after async TTS call (user may have pressed Stop meanwhile)
+      if (ttsCancelledRef.current || audioQueueRef.current.isStopped()) {
+        console.log('[TTS] Discarding synthesized audio due to post-generation cancellation/stop');
+        return;
+      }
       if (audioBlob) {
         const audioUrl = createAudioUrl(audioBlob);
         audioQueueRef.current.enqueue(audioUrl);
@@ -164,23 +254,65 @@ export default function VoiceAssistant() {
       }
 
       try {
+        // Frame duration ~32ms (empirical from original comment 20 frames ≈0.65s)
+        const frameMs = 32;
+        // Configure presets: fast ends earlier (lower redemptionFrames), reliable waits longer.
+        const presetConfig = {
+          ultra: {
+            redemptionFrames: 8, // ≈256ms pause
+            positiveSpeechThreshold: 0.56,
+            negativeSpeechThreshold: 0.44,
+            preSpeechPadFrames: 18,
+          },
+          fast: {
+            redemptionFrames: 11, // ≈350ms pause
+            positiveSpeechThreshold: 0.58,
+            negativeSpeechThreshold: 0.42,
+            preSpeechPadFrames: 20, // slightly less padding
+          },
+          balanced: {
+            redemptionFrames: 20, // ≈640ms pause (original)
+            positiveSpeechThreshold: 0.6,
+            negativeSpeechThreshold: 0.4,
+            preSpeechPadFrames: 25,
+          },
+          reliable: {
+            redemptionFrames: 31, // ≈1s pause for high certainty
+            positiveSpeechThreshold: 0.63,
+            negativeSpeechThreshold: 0.38,
+            preSpeechPadFrames: 30,
+          }
+        } as const;
+  const effectiveMode = vadMode === 'adaptive' ? adaptiveEffectiveMode : vadMode;
+  const cfg = presetConfig[effectiveMode];
         const myvad = await window.vad.MicVAD.new({
-          positiveSpeechThreshold: 0.6,  // Increased from 0.45 - requires stronger signal to detect speech
-          negativeSpeechThreshold: 0.4,  // Increased from 0.35 - higher threshold to stop detecting speech
-          redemptionFrames: 20, // ~0.65s pause triggers end
-          preSpeechPadFrames: 25, // ~0.8s pre-capture
+          positiveSpeechThreshold: cfg.positiveSpeechThreshold,
+          negativeSpeechThreshold: cfg.negativeSpeechThreshold,
+          redemptionFrames: cfg.redemptionFrames,
+          preSpeechPadFrames: cfg.preSpeechPadFrames,
           onSpeechStart: () => {
             // Only process if we're actually listening
             if (!isListeningRef.current) {
               console.log("Speech detected but not listening - ignoring");
               return;
             }
+            isCapturingRef.current = true; // mark active speech capture
+            lastSpeechStartRef.current = Date.now();
             
             // INTERRUPTION HANDLING: If audio is playing, stop it immediately
             if (audioQueueRef.current.getIsPlaying()) {
               console.log("🛑 User interrupted - stopping TTS playback");
               audioQueueRef.current.stopAll(); // Stop current audio and clear queue
+              // Record interruption timestamp
+              interruptionTimestampsRef.current.push(Date.now());
+              if (interruptionTimestampsRef.current.length > 20) {
+                interruptionTimestampsRef.current.shift();
+              }
             }
+
+            // Reset cancellation flags when new user speech starts
+            ttsCancelledRef.current = false;
+            streamingCancelledRef.current = false;
             
             console.log("Speech detected - recording started");
             setStatus("recording");
@@ -201,9 +333,29 @@ export default function VoiceAssistant() {
             isProcessingRef.current = true;
             console.log("Processing speech");
             setStatus("transcribing");
+
+            // Grace buffer: append trailing frames for ultra/fast effective modes to avoid clipping
+            const currentEffectiveMode = vadMode === 'adaptive' ? adaptiveEffectiveMode : vadMode;
+            let finalAudio = audio;
+            if (currentEffectiveMode === 'ultra' || currentEffectiveMode === 'fast') {
+              try {
+                const grace = await captureGraceBuffer();
+                if (grace && grace.length > 0) {
+                  const merged = new Float32Array(finalAudio.length + grace.length);
+                  merged.set(finalAudio, 0);
+                  merged.set(grace, finalAudio.length);
+                  finalAudio = merged;
+                  console.log(`[GraceCapture] Appended ${grace.length} samples (~${(grace.length / 16000 * 1000).toFixed(0)}ms)`);
+                } else {
+                  console.log('[GraceCapture] No grace data captured');
+                }
+              } catch (e) {
+                console.warn('[GraceCapture] Failed to append grace buffer', e);
+              }
+            }
             
             // Convert Float32Array to WAV
-            const wavBlob = float32ToWav(audio, 16000);
+            const wavBlob = float32ToWav(finalAudio, 16000);
             
             // Transcribe
             const transcriptionResult = await transcribeAudio(wavBlob, language);
@@ -243,7 +395,18 @@ export default function VoiceAssistant() {
                 content: userMessage.content
               }];
 
-              for await (const chunk of generateChatStream(apiMessages, language, currentSessionId)) {
+              // Prepare abort controller for this streaming session
+              if (streamAbortRef.current) {
+                // Abort any previous stream before starting a new one
+                try { streamAbortRef.current.abort(); } catch {}
+              }
+              streamAbortRef.current = new AbortController();
+              for await (const chunk of generateChatStream(apiMessages, language, currentSessionId, streamAbortRef.current.signal)) {
+                // Abort streaming if user pressed stop
+                if (streamingCancelledRef.current) {
+                  console.log('[STREAM] Cancellation detected - aborting stream loop');
+                  break;
+                }
                 // Capture session ID from any chunk (especially the final one)
                 if (chunk.session_id && chunk.session_id !== currentSessionId) {
                   console.log(`[DEBUG] Updating session ID from ${currentSessionId} to ${chunk.session_id}`);
@@ -263,8 +426,12 @@ export default function VoiceAssistant() {
                     const sentenceEnd = currentChunk.indexOf(strongBoundary[0]) + strongBoundary[0].length;
                     const sentence = currentChunk.slice(0, sentenceEnd).trim();
                     if (sentence) {
+                      if (ttsCancelledRef.current) {
+                        console.log('[TTS] Cancelled before sentence generation');
+                      } else {
                       // AWAIT to ensure sentences are processed in order
                       await generateAndQueueTTS(sentence);
+                      }
                       
                       // Update displayed text AFTER TTS is generated
                       displayedResponse += sentence + " ";
@@ -297,7 +464,11 @@ export default function VoiceAssistant() {
                         const sentenceEnd = lastCommaIndex + 2; // comma + space
                         const sentence = currentChunk.slice(0, sentenceEnd).trim();
                         if (sentence) {
-                          await generateAndQueueTTS(sentence);
+                          if (ttsCancelledRef.current) {
+                            console.log('[TTS] Cancelled before comma sentence generation');
+                          } else {
+                            await generateAndQueueTTS(sentence);
+                          }
                           displayedResponse += sentence + " ";
                           
                           if (!assistantMessageAdded) {
@@ -334,7 +505,11 @@ export default function VoiceAssistant() {
               // Queue remaining text
               if (currentChunk.trim()) {
                 // AWAIT to ensure final chunk is processed in order
-                await generateAndQueueTTS(currentChunk.trim());
+                if (ttsCancelledRef.current) {
+                  console.log('[TTS] Cancelled before final chunk generation');
+                } else {
+                  await generateAndQueueTTS(currentChunk.trim());
+                }
                 
                 // Update displayed text with remaining content AFTER TTS
                 displayedResponse += currentChunk.trim();
@@ -359,6 +534,11 @@ export default function VoiceAssistant() {
               // Wait for audio queue to finish
               await new Promise<void>((resolve) => {
                 const checkQueue = () => {
+                  if (ttsCancelledRef.current) {
+                    console.log('[QUEUE] Cancellation flag set - resolving early');
+                    resolve();
+                    return;
+                  }
                   if (audioQueueRef.current.getQueueLength() === 0 && !audioQueueRef.current.getIsPlaying()) {
                     resolve();
                   } else {
@@ -370,10 +550,38 @@ export default function VoiceAssistant() {
 
               setStatus("idle");
               isProcessingRef.current = false; // Reset processing flag
+              // Adaptive heuristic update AFTER error or cancel: keep previous effective mode
             } catch (error) {
               console.error("Chat stream error:", error);
               setStatus("idle");
               isProcessingRef.current = false; // Reset processing flag on error
+            }
+
+            // --- Adaptive Mode Heuristic Update (at end of processing) ---
+            if (vadMode === 'adaptive') {
+              const now = Date.now();
+              const start = lastSpeechStartRef.current;
+              const durationMs = start ? (now - start) : 0;
+              const recentWindowMs = 120000; // 2 minutes
+              const recentInterruptions = interruptionTimestampsRef.current.filter(t => t >= now - recentWindowMs).length;
+              let nextMode: 'ultra' | 'fast' | 'balanced' | 'reliable' = adaptiveEffectiveMode;
+              if (recentInterruptions >= 4) {
+                nextMode = 'ultra';
+              } else if (durationMs < 1200) {
+                nextMode = 'ultra';
+              } else if (durationMs < 2500) {
+                nextMode = 'fast';
+              } else if (durationMs < 5000) {
+                nextMode = 'balanced';
+              } else {
+                nextMode = 'reliable';
+              }
+              if (nextMode !== adaptiveEffectiveMode) {
+                console.log(`[AdaptiveVAD] duration=${Math.round(durationMs)}ms interruptions=${recentInterruptions} switching ${adaptiveEffectiveMode} -> ${nextMode}`);
+                setAdaptiveEffectiveMode(nextMode);
+              } else {
+                console.log(`[AdaptiveVAD] duration=${Math.round(durationMs)}ms interruptions=${recentInterruptions} keeping mode ${nextMode}`);
+              }
             }
           },
         });
@@ -392,7 +600,7 @@ export default function VoiceAssistant() {
         vadRef.current.destroy();
       }
     };
-  }, [messages, language, sessionId, float32ToWav, generateAndQueueTTS]);
+  }, [messages, language, sessionId, float32ToWav, generateAndQueueTTS, vadMode, adaptiveEffectiveMode]);
 
   // Auto-scroll messages
   useEffect(() => {
@@ -408,13 +616,33 @@ export default function VoiceAssistant() {
       setIsListening(false);
       isListeningRef.current = false; // Update ref
       setStatus("idle");
-      console.log("Stopped listening");
+      console.log("[UI] Stop button pressed - stopping VAD and attempting to halt any ongoing TTS");
+
+      // Cancel any ongoing streaming / TTS generation
+      ttsCancelledRef.current = true;
+      streamingCancelledRef.current = true;
+
+      // If audio is currently playing or queued, stop it now
+      const queueLen = audioQueueRef.current.getQueueLength();
+      const playing = audioQueueRef.current.getIsPlaying();
+      console.log(`[AUDIO] Before stop: queueLength=${queueLen}, isPlaying=${playing}`);
+      audioQueueRef.current.stopAll();
+      // Abort any active streaming
+      if (streamAbortRef.current) {
+        try { streamAbortRef.current.abort(); console.log('[STREAM] AbortController triggered (listening toggle stop)'); } catch {}
+      }
+      console.log('[AUDIO] Audio queue forcibly stopped');
+      console.log('[FLAGS] ttsCancelledRef:', ttsCancelledRef.current, 'streamingCancelledRef:', streamingCancelledRef.current);
     } else {
       // Start listening
       vadRef.current.start();
       setIsListening(true);
       isListeningRef.current = true; // Update ref
-      console.log("Started listening");
+      // Reset cancellation flags when user starts fresh listening session
+      ttsCancelledRef.current = false;
+      streamingCancelledRef.current = false;
+      audioQueueRef.current.resetStopFlag();
+      console.log("[UI] Started listening - flags reset, ready to process speech");
     }
   };
 
@@ -430,6 +658,18 @@ export default function VoiceAssistant() {
     
     const newSessionId = await createSession(language);
     setSessionId(newSessionId);
+  };
+
+  // User requested to stop audio manually
+  const handleUserStopAudio = () => {
+    console.log('[USER ACTION] Stop audio requested');
+    ttsCancelledRef.current = true;
+    streamingCancelledRef.current = true;
+    audioQueueRef.current.stopAll();
+    if (streamAbortRef.current) {
+      try { streamAbortRef.current.abort(); console.log('[STREAM] AbortController triggered (manual stop audio)'); } catch {}
+    }
+    setStatus('idle');
   };
 
   const getStatusLabel = () => {
@@ -601,6 +841,25 @@ export default function VoiceAssistant() {
                   <option value="te" className="bg-slate-900">తెలుగు</option>
                 </select>
               </div>
+
+              {/* VAD Responsiveness / Adaptive Selector (TEMPORARILY DISABLED)
+              <div className="flex items-center gap-3 px-6 py-3 bg-white/5 backdrop-blur-xl rounded-full border border-white/10 hover:border-white/20 transition-all mt-4">
+                <span className="text-xs text-gray-400">VAD Mode:</span>
+                <select
+                  value={vadMode}
+                  onChange={(e) => setVadMode(e.target.value as 'adaptive' | 'ultra' | 'fast' | 'balanced' | 'reliable')}
+                  className="bg-transparent text-white text-sm font-medium focus:outline-none cursor-pointer"
+                >
+                  <option value="adaptive" className="bg-slate-900">Adaptive (auto)</option>
+                  <option value="ultra" className="bg-slate-900">Ultra (~0.25s + grace)</option>
+                  <option value="fast" className="bg-slate-900">Fast (~0.35s)</option>
+                  <option value="balanced" className="bg-slate-900">Balanced (~0.64s)</option>
+                  <option value="reliable" className="bg-slate-900">Reliable (~1.0s)</option>
+                </select>
+                {vadMode === 'adaptive' && (
+                  <span className="text-[10px] text-gray-400 ml-2">Effective: {adaptiveEffectiveMode}</span>
+                )}
+              </div>*/}
             </div>
           </div>
 
@@ -609,7 +868,7 @@ export default function VoiceAssistant() {
             <ConversationPanel 
               messages={messages}
               onClearConversation={clearConversation}
-              onStopAudio={() => audioQueueRef.current.stop()}
+                onStopAudio={handleUserStopAudio}
               speakingMessageIndex={status === "speaking" ? messages.length - 1 : null}
             />
           </div>
