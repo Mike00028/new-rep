@@ -101,6 +101,21 @@ export class AudioQueue {
   }
 
   /**
+   * Stop all playback (alias for stop for clarity)
+   */
+  stopAll(): void {
+    this.stop();
+  }
+
+  /**
+   * Clear the queue without stopping current playback
+   */
+  clear(): void {
+    console.log('🗑️ Clearing audio queue');
+    this.queue = [];
+  }
+
+  /**
    * Pause current audio
    */
   pause(): void {

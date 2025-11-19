@@ -41,3 +41,10 @@ voice-assistant-nextjs/.env*.local
 *.log
 log/
 logs/
+stt-server/*.log.*
+# Ignore app.log variants anywhere
+app.log.*
+# Ignore entire stt-server folder logs but keep source code (if full folder should be ignored, replace with 'stt-server/')
+stt-server/app.log.*
+stt-server/app.log
+stt-server/app.*.log

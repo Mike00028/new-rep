@@ -6,14 +6,16 @@ body {
   background: #0a0a0a;
   color: #ededed;
   font-family: Arial, Helvetica, sans-serif;
+  overflow: hidden;
 }
 
 * {
   box-sizing: border-box;
 }
 
+/* Scrollbar styles for conversation panel */
 .scrollbar-thin::-webkit-scrollbar {
-  width: 6px;
+  width: 4px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-track {
@@ -21,10 +23,93 @@ body {
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Wave animations */
+@keyframes wave {
+  0%, 100% { 
+    transform: scaleY(0.8);
+    opacity: 0.5;
+  }
+  50% { 
+    transform: scaleY(1.8);
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.wave-bar-1 {
+  height: 30%;
+  left: 15%;
+  animation: wave 0.8s ease-in-out infinite;
+  animation-delay: 0s;
+}
+
+.wave-bar-2 {
+  height: 50%;
+  left: 30%;
+  animation: wave 1s ease-in-out infinite;
+  animation-delay: 0.15s;
+}
+
+.wave-bar-3 {
+  height: 70%;
+  left: 50%;
+  animation: wave 1.2s ease-in-out infinite;
+  animation-delay: 0.3s;
+}
+
+.wave-bar-4 {
+  height: 55%;
+  left: 70%;
+  animation: wave 1s ease-in-out infinite;
+  animation-delay: 0.15s;
+}
+
+.wave-bar-5 {
+  height: 35%;
+  left: 85%;
+  animation: wave 0.8s ease-in-out infinite;
+  animation-delay: 0s;
+}
+
+/* Fade in animation for messages */
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

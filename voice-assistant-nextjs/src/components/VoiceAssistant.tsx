@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useState, useCallback } from "react";
+import React, { useRef, useEffect, useState, useCallback } from "react";
 import { AudioQueue } from "@/lib/audioQueue";
 import ConversationPanel from "./ConversationPanel";
 import { 
@@ -45,10 +45,34 @@ type Message = {
 
 type Status = "idle" | "recording" | "transcribing" | "thinking" | "speaking";
 
+// Test messages for UI development
+const TEST_MESSAGES: Message[] = [
+  { role: "user", content: "What's the capital of France?" },
+  { role: "assistant", content: "The capital of France is Paris. It's one of the most visited cities in the world, known for its art, fashion, gastronomy, and culture." },
+  { role: "user", content: "How many people live there?" },
+  { role: "assistant", content: "The city of Paris has approximately 2.2 million inhabitants, but the Paris metropolitan area has around 12 million people, making it one of Europe's largest metropolitan areas." },
+  { role: "user", content: "What's a famous landmark?" },
+  { role: "assistant", content: "The Eiffel Tower is probably the most iconic landmark in Paris. Built in 1889, it stands 330 meters tall and receives millions of visitors annually." },
+  { role: "user", content: "Tell me about French cuisine" },
+  { role: "assistant", content: "French cuisine is renowned worldwide for its sophistication and variety. Classic dishes include coq au vin, boeuf bourguignon, ratatouille, and crème brûlée. French pastries like croissants and macarons are also beloved globally." },
+  { role: "user", content: "What language do they speak?" },
+  { role: "assistant", content: "The official language is French. While many Parisians speak English, especially in tourist areas, learning a few French phrases is always appreciated by locals." },
+  { role: "user", content: "Best time to visit?" },
+  { role: "assistant", content: "Spring (April-June) and fall (September-November) are ideal times to visit Paris. The weather is pleasant, and there are fewer tourists compared to summer. Plus, you'll see beautiful blooms in spring or autumn foliage." },
+  { role: "user", content: "How's the public transport?" },
+  { role: "assistant", content: "Paris has an excellent public transportation system called the Métro, with 16 lines covering the entire city. It's efficient, affordable, and the fastest way to get around. There are also buses and RER trains for longer distances." },
+  { role: "user", content: "Any museums you recommend?" },
+  { role: "assistant", content: "The Louvre is a must-visit, housing the Mona Lisa and thousands of other artworks. Musée d'Orsay features impressive Impressionist works. For modern art, check out Centre Pompidou." },
+  { role: "user", content: "What about nightlife?" },
+  { role: "assistant", content: "Paris offers diverse nightlife options from cozy wine bars in the Marais to trendy clubs in the Pigalle district. The city is also known for its cabaret shows like the Moulin Rouge." },
+  { role: "user", content: "Is it expensive?" },
+  { role: "assistant", content: "Paris can be expensive, especially in tourist areas. However, you can enjoy it on a budget by eating at local bistros, using public transport, and visiting free attractions like Notre-Dame's exterior or the Sacré-Cœur." },
+];
+
 export default function VoiceAssistant() {
   const [isListening, setIsListening] = useState(false);
   const [status, setStatus] = useState<Status>("idle");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(TEST_MESSAGES); // Load test messages
   const [language, setLanguage] = useState("en");
   const [isVadReady, setIsVadReady] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -151,6 +175,13 @@ export default function VoiceAssistant() {
               console.log("Speech detected but not listening - ignoring");
               return;
             }
+            
+            // INTERRUPTION HANDLING: If audio is playing, stop it immediately
+            if (audioQueueRef.current.getIsPlaying()) {
+              console.log("🛑 User interrupted - stopping TTS playback");
+              audioQueueRef.current.stopAll(); // Stop current audio and clear queue
+            }
+            
             console.log("Speech detected - recording started");
             setStatus("recording");
           },
@@ -425,7 +456,7 @@ export default function VoiceAssistant() {
   };
 
   return (
-    <div className="min-h-screen bg-black text-white overflow-hidden">
+    <div className="h-screen bg-black text-white overflow-hidden">
       {/* Grid Background Pattern */}
       {isMounted && (
         <div className="absolute inset-0 opacity-10">
@@ -444,9 +475,9 @@ export default function VoiceAssistant() {
         </>
       )}
       
-      <div className="relative z-10 min-h-screen flex flex-col">
+      <div className="relative z-10 h-screen flex flex-col">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-white/10 bg-black/80 backdrop-blur-xl">
+        <div className="px-6 py-4 border-b border-white/10 bg-black/80 backdrop-blur-xl flex-shrink-0">
           <div className="max-w-7xl mx-auto flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent">
@@ -460,25 +491,25 @@ export default function VoiceAssistant() {
           </div>
         </div>
 
-        {/* Main Content - 50/50 Split */}
-        <div className="flex-1 grid grid-cols-2 gap-0 overflow-hidden">
+  {/* Main Content - 50/50 Split */}
+  <div className="flex-1 grid grid-cols-2 gap-0 h-full min-h-0">
           
           {/* Left Side - Voice Interface */}
-          <div className="flex flex-col items-center justify-center px-8 py-6 border-r border-white/10 bg-gray-900/50">
-            <div className="w-full h-full flex flex-col items-center justify-center">
+          <div className="flex flex-col items-center justify-center px-8 py-6 border-r-2 border-white/20 bg-gray-900/50 h-full min-h-0">
+            <div className="w-full flex flex-col items-center justify-center">
               
               {/* Voice Visualizer Circle */}
               <div className="relative mb-16 flex items-center justify-center">
                 {/* Outer rings - pulse when active */}
                 {(status === "recording" || status === "speaking") && (
                   <>
-                    <div className="absolute rounded-full bg-purple-500/30 animate-pulse" style={{width: '320px', height: '320px'}} />
-                    <div className="absolute rounded-full bg-blue-500/20 animate-pulse" style={{width: '360px', height: '360px', animationDelay: '0.1s'}} />
+                    <div className="absolute rounded-full bg-purple-500/30 animate-pulse" style={{width: '380px', height: '380px'}} />
+                    <div className="absolute rounded-full bg-blue-500/20 animate-pulse" style={{width: '420px', height: '420px', animationDelay: '0.1s'}} />
                   </>
                 )}
                 
                 {/* Main circle with waves */}
-                <div className={`relative w-72 h-72 rounded-full flex items-center justify-center transition-all duration-500 backdrop-blur-sm border border-white/10 ${
+                <div className={`relative w-80 h-80 rounded-full flex items-center justify-center transition-all duration-500 backdrop-blur-sm border border-white/10 ${
                   status === "recording" 
                     ? "bg-gradient-to-br from-red-600 to-pink-600 shadow-2xl shadow-red-500/60 scale-105" 
                     : status === "speaking"
@@ -537,7 +568,9 @@ export default function VoiceAssistant() {
 
               {/* Status Text */}
               <div className="text-center mb-10">
-                {getStatusLabel()}
+                <div className="inline-block px-6 py-3 rounded-full bg-white/10 border border-white/20 backdrop-blur-sm">
+                  <p className="text-xl font-medium text-white">{getStatusLabel()}</p>
+                </div>
               </div>
 
               {/* Control Buttons */}
@@ -572,7 +605,7 @@ export default function VoiceAssistant() {
           </div>
 
           {/* Right Side - Messages Panel */}
-          <div className="flex flex-col bg-black/50">
+          <div className="flex flex-col bg-black/50 h-full min-h-0">
             <ConversationPanel 
               messages={messages}
               onClearConversation={clearConversation}

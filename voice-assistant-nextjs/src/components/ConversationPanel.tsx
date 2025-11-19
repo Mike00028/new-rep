@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useState } from "react";
+import React, { useRef, useEffect, useState } from "react";
 import { marked } from "marked";
 
 type Message = {
@@ -22,6 +22,9 @@ interface ConversationPanelProps {
 }
 
 export default function ConversationPanel({ messages, onClearConversation, onStopAudio, speakingMessageIndex }: ConversationPanelProps) {
+  // Scroll container for messages (only this should scroll)
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // Ref kept for backward compatibility if needed; not used after replacing scrollIntoView
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [codeModal, setCodeModal] = useState<{
     isOpen: boolean;
@@ -159,14 +162,15 @@ export default function ConversationPanel({ messages, onClearConversation, onSto
     return <div>{parts}</div>;
   };
 
-  // Auto-scroll messages
+  // Auto-scroll messages (contain scroll inside panel, avoid whole page scroll)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!scrollContainerRef.current) return;
+    scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
   }, [messages]);
 
   return (
     <>
-      <div className="flex flex-col h-full">
+  <div className="flex flex-col h-full min-h-0">
         <div className="p-6 border-b border-white/10 flex-shrink-0 bg-black/30">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-medium text-gray-200">Conversation</h3>
@@ -181,7 +185,7 @@ export default function ConversationPanel({ messages, onClearConversation, onSto
           </div>
         </div>
         
-        <div className="flex-1 overflow-y-auto p-6 space-y-4 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+  <div ref={scrollContainerRef} className="flex-1 overflow-y-auto space-y-4 scrollbar-thin p-6">
           {messages.length === 0 ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
@@ -207,7 +211,7 @@ export default function ConversationPanel({ messages, onClearConversation, onSto
                 )}
                 <div className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                   <div
-                    className={`max-w-xs px-5 py-3 rounded-2xl backdrop-blur-xl transition-all hover:shadow-lg ${
+                    className={`max-w-lg px-5 py-3 rounded-2xl backdrop-blur-xl transition-all hover:shadow-lg ${
                       msg.role === "user"
                         ? "bg-gradient-to-br from-blue-600 to-purple-600 text-white rounded-br-none shadow-lg shadow-blue-500/20 border border-blue-400/30"
                         : "bg-white/8 text-gray-100 rounded-bl-none shadow-lg shadow-black/20 border border-white/10 hover:border-white/20"
@@ -282,37 +286,6 @@ export default function ConversationPanel({ messages, onClearConversation, onSto
           </div>
         </div>
       )}
-
-      {/* Scrollbar styles */}
-      <style jsx global>{`
-        .scrollbar-thin::-webkit-scrollbar {
-          width: 4px;
-        }
-        
-        .scrollbar-thin::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        
-        .scrollbar-thin::-webkit-scrollbar-thumb {
-          background: rgba(255, 255, 255, 0.2);
-          border-radius: 2px;
-        }
-        
-        .animate-fade-in {
-          animation: fadeIn 0.3s ease-in-out;
-        }
-        
-        @keyframes fadeIn {
-          from {
-            opacity: 0;
-            transform: translateY(20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-      `}</style>
     </>
   );
 }
