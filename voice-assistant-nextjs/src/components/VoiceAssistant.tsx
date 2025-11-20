@@ -167,7 +167,7 @@ export default function VoiceAssistant() {
         const myvad = await window.vad.MicVAD.new({
           positiveSpeechThreshold: 0.6,  // Increased from 0.45 - requires stronger signal to detect speech
           negativeSpeechThreshold: 0.4,  // Increased from 0.35 - higher threshold to stop detecting speech
-          redemptionFrames: 20, // ~0.65s pause triggers end
+          redemptionFrames: 15, // ~0.32s pause triggers end (reduced from 20 for faster detection)
           preSpeechPadFrames: 25, // ~0.8s pre-capture
           onSpeechStart: () => {
             // Only process if we're actually listening
@@ -205,8 +205,9 @@ export default function VoiceAssistant() {
             // Convert Float32Array to WAV
             const wavBlob = float32ToWav(audio, 16000);
             
-            // Transcribe
+            // Transcribe using original STT server only
             const transcriptionResult = await transcribeAudio(wavBlob, language);
+            console.log('Transcription result:', transcriptionResult);
             const transcription = transcriptionResult.text;
             
             if (!transcription || transcriptionResult.error) {
@@ -449,9 +450,11 @@ export default function VoiceAssistant() {
     };
 
     return (
+      <div>
       <p className="text-2xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent">
         {getLabel()}
       </p>
+</div>
     );
   };
 
@@ -601,6 +604,8 @@ export default function VoiceAssistant() {
                   <option value="te" className="bg-slate-900">తెలుగు</option>
                 </select>
               </div>
+
+
             </div>
           </div>
 

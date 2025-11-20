@@ -4,3 +4,5 @@ httpx
 langchain
 langchain-ollama
 langgraph
+faster-whisper
+onnxruntime-gpu

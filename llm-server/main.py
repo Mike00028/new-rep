@@ -13,7 +13,8 @@ from routes import (
     get_session_endpoint,
     get_session_messages_endpoint,
     delete_session_endpoint,
-    chat_stream_endpoint
+    chat_stream_endpoint,
+    fast_stt_endpoint
 )
 
 # Configure logging
@@ -39,6 +40,7 @@ app.get("/session/{session_id}")(get_session_endpoint)
 app.get("/session/{session_id}/messages")(get_session_messages_endpoint)
 app.delete("/session/{session_id}")(delete_session_endpoint)
 app.post("/chat/")(chat_stream_endpoint)
+app.post("/stt/fast")(fast_stt_endpoint)
 
 
 if __name__ == "__main__":

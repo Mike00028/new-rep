@@ -13,8 +13,8 @@ else:
 # Determine the compute type based on the device
 compute_type = "float16" if device == "cuda" else "int8"
 
-# Preload the base model
-model = WhisperModel("base", device=device, compute_type=compute_type)
+# Preload the base/distil-medium.en model
+model = WhisperModel("distil-large-v2", device=device, compute_type=compute_type)
 security = HTTPBearer()
 MAX_THREADS = 6 # Increased for better concurrent processing
 
