@@ -26,19 +26,13 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/* Load ONNX Runtime first - required by VAD */}
+        {/* Local VAD files for offline operation */}
         <Script
-          src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"
+          src="/vad/ort.wasm.min.js"
           strategy="beforeInteractive"
         />
-        {/* Configure ONNX Runtime WASM paths */}
         <Script
-          src="/ort-config.js"
-          strategy="beforeInteractive"
-        />
-        {/* Load VAD library after ONNX Runtime */}
-        <Script
-          src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.7/dist/bundle.min.js"
+          src="/vad/bundle.min.js"
           strategy="beforeInteractive"
         />
       </head>
