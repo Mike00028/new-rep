@@ -2,6 +2,14 @@
 
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import { AudioQueue } from "@/lib/audioQueue";
+
+// Declare global vad interface
+declare global {
+  interface Window {
+    vad: any;
+    ort: any;
+  }
+}
 import { sanitizeForTTS } from "@/lib/textSanitizer";
 import ConversationPanel from "./ConversationPanel";
 import { 
@@ -23,30 +31,7 @@ declare global {
   }
 }
 
-declare global {
-  interface Window {
-    vad: {
-      MicVAD: {
-        new: (config: VadConfig) => Promise<VadInstance>;
-      };
-    };
-  }
-}
 
-interface VadConfig {
-  positiveSpeechThreshold?: number;
-  negativeSpeechThreshold?: number;
-  redemptionFrames?: number;
-  preSpeechPadFrames?: number;
-  onSpeechStart?: () => void;
-  onSpeechEnd: (audio: Float32Array) => void;
-}
-
-interface VadInstance {
-  start: () => void;
-  pause: () => void;
-  destroy?: () => void;
-}
 
 type Message = {
   role: "user" | "assistant";
@@ -90,6 +75,11 @@ export default function VoiceAssistant() {
   // VAD responsiveness preset: affects end-of-speech detection latency; 'adaptive' auto-selects a preset
   const [vadMode, setVadMode] = useState<'adaptive' | 'ultra' | 'fast' | 'balanced' | 'reliable'>('balanced');
   const [adaptiveEffectiveMode, setAdaptiveEffectiveMode] = useState<'ultra' | 'fast' | 'balanced' | 'reliable'>('balanced');
+  
+  // New VAD state for direct API
+  const [vadInstance, setVadInstance] = useState<any>(null);
+  const [vadReady, setVadReady] = useState(false);
+  const [vadError, setVadError] = useState<string | null>(null);
   const graceMs = 150; // extra capture after VAD end to avoid clipping final phoneme
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const graceRecorderRef = useRef<MediaRecorder | null>(null);
@@ -146,7 +136,6 @@ export default function VoiceAssistant() {
     });
   };
 
-  const vadRef = useRef<VadInstance | null>(null);
   const audioQueueRef = useRef<AudioQueue>(new AudioQueue());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isListeningRef = useRef<boolean>(false); // Track listening state in ref for callbacks
@@ -158,10 +147,317 @@ export default function VoiceAssistant() {
   const lastSpeechStartRef = useRef<number | null>(null);
   const interruptionTimestampsRef = useRef<number[]>([]);
 
+  // Configure VAD settings based on mode
+  const getVADConfig = useCallback(() => {
+    // Frame duration ~32ms (empirical from original comment 20 frames ≈0.65s)
+    const frameMs = 32;
+    // Configure presets: fast ends earlier (lower redemptionFrames), reliable waits longer.
+    const presetConfig = {
+      ultra: {
+        redemptionFrames: 8, // ≈256ms pause
+        positiveSpeechThreshold: 0.5, // Lower threshold for easier voice detection
+        negativeSpeechThreshold: 0.35,
+        preSpeechPadFrames: 18,
+      },
+      fast: {
+        redemptionFrames: 11, // ≈350ms pause
+        positiveSpeechThreshold: 0.5, // Lower threshold for easier voice detection
+        negativeSpeechThreshold: 0.35,
+        preSpeechPadFrames: 20, // slightly less padding
+      },
+      balanced: {
+        redemptionFrames: 20, // ≈640ms pause (original)
+        positiveSpeechThreshold: 0.5, // Lower threshold for easier voice detection
+        negativeSpeechThreshold: 0.35,
+        preSpeechPadFrames: 25,
+      },
+      reliable: {
+        redemptionFrames: 31, // ≈1s pause for high certainty
+        positiveSpeechThreshold: 0.55, // Slightly lower threshold
+        negativeSpeechThreshold: 0.35,
+        preSpeechPadFrames: 30,
+      }
+    } as const;
+    
+    const effectiveMode = vadMode === 'adaptive' ? adaptiveEffectiveMode : vadMode;
+    return presetConfig[effectiveMode];
+  }, [vadMode, adaptiveEffectiveMode]);
+
+
+  // Initialize VAD using direct API like Gradio example
+  useEffect(() => {
+    let isInitializing = false;
+    
+    const initVAD = async () => {
+      if (isInitializing || vadInstance) {
+        console.log("🔄 VAD already initializing or initialized, skipping...");
+        return;
+      }
+      
+      isInitializing = true;
+      
+      try {
+        console.log("🔄 Initializing VAD with direct API...");
+        console.log("🔍 Window vad available:", typeof window !== 'undefined' && !!window.vad);
+        console.log("🔍 Window vad object:", typeof window !== 'undefined' ? window.vad : 'window undefined');
+        
+        // Wait a bit for scripts to load
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Check if vad is available globally
+        if (typeof window === 'undefined' || !window.vad) {
+          console.error("❌ VAD not available. Make sure scripts are loaded.");
+          console.log("🔍 Available globals:", typeof window !== 'undefined' ? Object.keys(window).filter(k => k.includes('vad') || k.includes('VAD') || k.includes('onnx') || k.includes('ort')) : 'none');
+          console.log("🔍 Window.ort available:", typeof window !== 'undefined' && !!window.ort);
+          setVadError("VAD library not loaded");
+          isInitializing = false;
+          return;
+        }
+
+        // Use the exact same options structure as the working example
+        const vadOptions = {
+          onSpeechStart: () => {
+            console.log("🎤 VAD: Speech detected!", { isListening: isListeningRef.current });
+            if (!isListeningRef.current) {
+              console.log("Speech detected but not listening - ignoring");
+              return;
+            }
+            console.log("Speech detected - recording started");
+            setStatus("recording");
+          },
+          onSpeechEnd: async (audio: Float32Array) => {
+            console.log("🔇 VAD: Speech ended!", { 
+              isListening: isListeningRef.current, 
+              audioLength: audio.length,
+              audioSample: audio.slice(0, 10) // First 10 samples for debugging
+            });
+            
+            if (!isListeningRef.current) {
+              console.log("Speech ended but not listening - ignoring");
+              return;
+            }
+            
+            console.log("Processing speech, audio length:", audio.length);
+            setStatus("transcribing");
+
+            // Convert Float32Array to WAV
+            const wavBlob = float32ToWav(audio, 16000);
+            
+            // Transcribe using original STT server only
+            const transcriptionResult = await transcribeAudio(wavBlob, language);
+            console.log('Transcription result:', transcriptionResult);
+            const transcription = transcriptionResult.text;
+            
+            if (!transcription || transcriptionResult.error) {
+              setStatus("idle");
+              return;
+            }
+
+            const userMessage: Message = { role: "user", content: transcription };
+            setMessages((prev) => [...prev, userMessage]);
+            setStatus("thinking");
+
+            // Stream AI response with session
+            let currentChunk = "";
+            let displayedResponse = "";
+            let assistantMessageAdded = false;
+            
+            // Ensure we have a session ID before proceeding
+            let currentSessionId = sessionId;
+            if (!currentSessionId) {
+              console.log('[DEBUG] No session ID, creating one...');
+              currentSessionId = await createSession(language);
+              setSessionId(currentSessionId);
+              console.log(`[DEBUG] Created new session: ${currentSessionId}`);
+            } else {
+              console.log(`[DEBUG] Using existing sessionId: ${currentSessionId}`);
+            }
+
+            try {
+              // Only send the new user message, not the full history
+              // The session memory will maintain context
+              const apiMessages: ApiMessage[] = [{
+                role: userMessage.role,
+                content: userMessage.content
+              }];
+
+              const streamReader = await generateChatStream(apiMessages, currentSessionId);
+              
+              for await (const chunk of streamReader) {
+                if (chunk.text) {
+                  currentChunk += chunk.text;
+
+                  // Detect sentence boundaries - prioritize period/exclamation/question mark
+                  const strongBoundary = currentChunk.match(/(?<!\d)[.!?]\s/);
+                  
+                  if (strongBoundary) {
+                    // Found period, exclamation, or question mark - send immediately
+                    const sentenceEnd = currentChunk.indexOf(strongBoundary[0]) + strongBoundary[0].length;
+                    const sentence = currentChunk.slice(0, sentenceEnd).trim();
+                    if (sentence) {
+                      // Generate TTS for sentence
+                      try {
+                        const sanitizedText = sanitizeForTTS(sentence);
+                        const audioResponse = await synthesizeSpeech(sanitizedText, language);
+                        if (audioResponse) {
+                          const audioUrl = createAudioUrl(audioResponse);
+                          audioQueueRef.current.enqueue(audioUrl);
+                        }
+                      } catch (error) {
+                        console.error('TTS generation failed:', error);
+                      }
+                      
+                      // Update displayed text
+                      displayedResponse += sentence + " ";
+                      
+                      // Add assistant message only when we have content
+                      if (!assistantMessageAdded) {
+                        const assistantMessage: Message = { role: "assistant", content: displayedResponse.trim() };
+                        setMessages((prev) => [...prev, assistantMessage]);
+                        assistantMessageAdded = true;
+                      } else {
+                        // Update existing message
+                        setMessages((prev) => {
+                          const newMessages = [...prev];
+                          const lastMessage = newMessages[newMessages.length - 1];
+                          if (lastMessage && lastMessage.role === "assistant") {
+                            lastMessage.content = displayedResponse.trim();
+                          }
+                          return newMessages;
+                        });
+                      }
+                    }
+                    
+                    // Remove processed sentence from buffer
+                    currentChunk = currentChunk.slice(sentenceEnd);
+                  }
+                }
+              }
+
+              // Process any remaining text
+              if (currentChunk.trim()) {
+                try {
+                  const sanitizedText = sanitizeForTTS(currentChunk.trim());
+                  const audioResponse = await synthesizeSpeech(sanitizedText, language);
+                  if (audioResponse) {
+                    const audioUrl = createAudioUrl(audioResponse);
+                    audioQueueRef.current.enqueue(audioUrl);
+                  }
+                } catch (error) {
+                  console.error('TTS generation failed:', error);
+                }
+                
+                displayedResponse += currentChunk.trim();
+                
+                if (!assistantMessageAdded) {
+                  const assistantMessage: Message = { role: "assistant", content: displayedResponse.trim() };
+                  setMessages((prev) => [...prev, assistantMessage]);
+                } else {
+                  setMessages((prev) => {
+                    const newMessages = [...prev];
+                    const lastMessage = newMessages[newMessages.length - 1];
+                    if (lastMessage && lastMessage.role === "assistant") {
+                      lastMessage.content = displayedResponse.trim();
+                    }
+                    return newMessages;
+                  });
+                }
+              }
+
+              setStatus("idle");
+            } catch (error) {
+              console.error("Chat stream error:", error);
+              setStatus("idle");
+            }
+          },
+          // Local paths for offline operation
+          onnxWASMBasePath: "/vad/",
+          baseAssetPath: "/vad/",
+          workletURL: "/vad/vad.worklet.bundle.min.js"
+        };
+
+        // Configure ONNX runtime for local WASM files
+        if (window.ort && window.ort.env) {
+          window.ort.env.wasm.wasmPaths = "/vad/";
+          console.log("🔧 ONNX runtime configured for local WASM files");
+          console.log("🔧 ONNX env config:", window.ort.env.wasm);
+        } else {
+          console.log("🔧 ONNX runtime not found or no env property");
+        }
+        
+        console.log("🔧 Attempting to create VAD instance...");
+        console.log("🔧 VAD MicVAD available:", !!window.vad.MicVAD);
+        console.log("🔧 VAD options:", vadOptions);
+        
+        // Add timeout to prevent hanging
+        const vadInstPromise = window.vad.MicVAD.new(vadOptions);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('VAD initialization timeout')), 10000)
+        );
+        
+        const vadInst = await Promise.race([vadInstPromise, timeoutPromise]);
+        console.log("🔧 VAD instance created:", vadInst);
+        
+        // Stop the VAD initially - we'll start when user clicks button
+        await vadInst.pause();
+        console.log("🔧 VAD paused, waiting for user to start");
+        
+        setVadInstance(vadInst);
+        setVadReady(true);
+        setVadError(null);
+        console.log("✅ VAD initialized successfully");
+        
+      } catch (error) {
+        console.error("❌ VAD initialization failed:", error);
+        setVadError(error instanceof Error ? error.message : "VAD initialization failed");
+        setVadReady(false);
+        isInitializing = false;
+      }
+    };
+
+    initVAD();
+
+    // Cleanup
+    return () => {
+      if (vadInstance) {
+        vadInstance.destroy();
+      }
+    };
+  }, []);
+
   // Set mounted state after hydration
   useEffect(() => {
     setIsMounted(true);
+    
+    // Check microphone permissions
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          console.log("🎤 Microphone access granted");
+          stream.getTracks().forEach(track => track.stop()); // Stop the stream immediately
+        })
+        .catch(err => {
+          console.error("🎤 Microphone access denied:", err);
+        });
+    } else {
+      console.error("🎤 getUserMedia not supported");
+    }
+    
+    // Fallback: Enable VAD after 3 seconds if it's still not ready
+    const fallbackTimer = setTimeout(() => {
+      setIsVadReady((prevReady) => {
+        if (!prevReady) {
+          console.log("🎤 VAD fallback: Enabling button after timeout");
+          return true;
+        }
+        return prevReady;
+      });
+    }, 3000);
+    
+    return () => clearTimeout(fallbackTimer);
   }, []);
+
+
 
   // Convert Float32Array to WAV blob
   const float32ToWav = useCallback((audioData: Float32Array, sampleRate: number): Blob => {
@@ -242,365 +538,7 @@ export default function VoiceAssistant() {
     initSession();
   }, [language, sessionId]); // Include dependencies
 
-  // Initialize VAD from CDN
-  useEffect(() => {
-    const initVAD = async () => {
-      if (typeof window === "undefined") return;
 
-      // Wait for window.vad to be available from CDN
-      if (!window.vad) {
-        setTimeout(initVAD, 500);
-        return;
-      }
-
-      try {
-        // Frame duration ~32ms (empirical from original comment 20 frames ≈0.65s)
-        const frameMs = 32;
-        // Configure presets: fast ends earlier (lower redemptionFrames), reliable waits longer.
-        const presetConfig = {
-          ultra: {
-            redemptionFrames: 8, // ≈256ms pause
-            positiveSpeechThreshold: 0.56,
-            negativeSpeechThreshold: 0.44,
-            preSpeechPadFrames: 18,
-          },
-          fast: {
-            redemptionFrames: 11, // ≈350ms pause
-            positiveSpeechThreshold: 0.58,
-            negativeSpeechThreshold: 0.42,
-            preSpeechPadFrames: 20, // slightly less padding
-          },
-          balanced: {
-            redemptionFrames: 20, // ≈640ms pause (original)
-            positiveSpeechThreshold: 0.6,
-            negativeSpeechThreshold: 0.4,
-            preSpeechPadFrames: 25,
-          },
-          reliable: {
-            redemptionFrames: 31, // ≈1s pause for high certainty
-            positiveSpeechThreshold: 0.63,
-            negativeSpeechThreshold: 0.38,
-            preSpeechPadFrames: 30,
-          }
-        } as const;
-  const effectiveMode = vadMode === 'adaptive' ? adaptiveEffectiveMode : vadMode;
-  const cfg = presetConfig[effectiveMode];
-        const myvad = await window.vad.MicVAD.new({
-          positiveSpeechThreshold: cfg.positiveSpeechThreshold,
-          negativeSpeechThreshold: cfg.negativeSpeechThreshold,
-          redemptionFrames: cfg.redemptionFrames,
-          preSpeechPadFrames: cfg.preSpeechPadFrames,
-          onSpeechStart: () => {
-            // Only process if we're actually listening
-            if (!isListeningRef.current) {
-              console.log("Speech detected but not listening - ignoring");
-              return;
-            }
-            isCapturingRef.current = true; // mark active speech capture
-            lastSpeechStartRef.current = Date.now();
-            
-            // INTERRUPTION HANDLING: If audio is playing, stop it immediately
-            if (audioQueueRef.current.getIsPlaying()) {
-              console.log("🛑 User interrupted - stopping TTS playback");
-              audioQueueRef.current.stopAll(); // Stop current audio and clear queue
-              // Record interruption timestamp
-              interruptionTimestampsRef.current.push(Date.now());
-              if (interruptionTimestampsRef.current.length > 20) {
-                interruptionTimestampsRef.current.shift();
-              }
-            }
-
-            // Reset cancellation flags when new user speech starts
-            ttsCancelledRef.current = false;
-            streamingCancelledRef.current = false;
-            
-            console.log("Speech detected - recording started");
-            setStatus("recording");
-          },
-          onSpeechEnd: async (audio: Float32Array) => {
-            // Only process if we're actually listening
-            if (!isListeningRef.current) {
-              console.log("Speech ended but not listening - ignoring");
-              return;
-            }
-            
-            // Prevent multiple simultaneous processing
-            if (isProcessingRef.current) {
-              console.log("Already processing speech - ignoring duplicate");
-              return;
-            }
-            
-            isProcessingRef.current = true;
-            console.log("Processing speech");
-            setStatus("transcribing");
-
-            // Grace buffer: append trailing frames for ultra/fast effective modes to avoid clipping
-            const currentEffectiveMode = vadMode === 'adaptive' ? adaptiveEffectiveMode : vadMode;
-            let finalAudio = audio;
-            if (currentEffectiveMode === 'ultra' || currentEffectiveMode === 'fast') {
-              try {
-                const grace = await captureGraceBuffer();
-                if (grace && grace.length > 0) {
-                  const merged = new Float32Array(finalAudio.length + grace.length);
-                  merged.set(finalAudio, 0);
-                  merged.set(grace, finalAudio.length);
-                  finalAudio = merged;
-                  console.log(`[GraceCapture] Appended ${grace.length} samples (~${(grace.length / 16000 * 1000).toFixed(0)}ms)`);
-                } else {
-                  console.log('[GraceCapture] No grace data captured');
-                }
-              } catch (e) {
-                console.warn('[GraceCapture] Failed to append grace buffer', e);
-              }
-            }
-            
-            // Convert Float32Array to WAV
-            const wavBlob = float32ToWav(finalAudio, 16000);
-            
-            // Transcribe
-            const transcriptionResult = await transcribeAudio(wavBlob, language);
-            const transcription = transcriptionResult.text;
-            
-            if (!transcription || transcriptionResult.error) {
-              setStatus("idle");
-              isProcessingRef.current = false; // Reset processing flag
-              return;
-            }
-
-            const userMessage: Message = { role: "user", content: transcription };
-            setMessages((prev) => [...prev, userMessage]);
-            setStatus("thinking");
-
-            // Stream AI response with session
-            let currentChunk = "";
-            let displayedResponse = "";
-            let assistantMessageAdded = false;
-            
-            // Ensure we have a session ID before proceeding
-            let currentSessionId = sessionId;
-            if (!currentSessionId) {
-              console.log('[DEBUG] No session ID, creating one...');
-              currentSessionId = await createSession(language);
-              setSessionId(currentSessionId);
-              console.log(`[DEBUG] Created new session: ${currentSessionId}`);
-            } else {
-              console.log(`[DEBUG] Using existing sessionId: ${currentSessionId}`);
-            }
-
-            try {
-              // Only send the new user message, not the full history
-              // The session memory will maintain context
-              const apiMessages: ApiMessage[] = [{
-                role: userMessage.role,
-                content: userMessage.content
-              }];
-
-              // Prepare abort controller for this streaming session
-              if (streamAbortRef.current) {
-                // Abort any previous stream before starting a new one
-                try { streamAbortRef.current.abort(); } catch {}
-              }
-              streamAbortRef.current = new AbortController();
-              for await (const chunk of generateChatStream(apiMessages, language, currentSessionId, streamAbortRef.current.signal)) {
-                // Abort streaming if user pressed stop
-                if (streamingCancelledRef.current) {
-                  console.log('[STREAM] Cancellation detected - aborting stream loop');
-                  break;
-                }
-                // Capture session ID from any chunk (especially the final one)
-                if (chunk.session_id && chunk.session_id !== currentSessionId) {
-                  console.log(`[DEBUG] Updating session ID from ${currentSessionId} to ${chunk.session_id}`);
-                  currentSessionId = chunk.session_id;
-                  setSessionId(currentSessionId);
-                }
-                
-                if (chunk.text) {
-                  currentChunk += chunk.text;
-
-                  // Detect sentence boundaries - prioritize period/exclamation/question mark
-                  // For commas, wait to see if more commas are coming (better phrasing)
-                  const strongBoundary = currentChunk.match(/(?<!\d)[.!?]\s/);
-                  
-                  if (strongBoundary) {
-                    // Found period, exclamation, or question mark - send immediately
-                    const sentenceEnd = currentChunk.indexOf(strongBoundary[0]) + strongBoundary[0].length;
-                    const sentence = currentChunk.slice(0, sentenceEnd).trim();
-                    if (sentence) {
-                      if (ttsCancelledRef.current) {
-                        console.log('[TTS] Cancelled before sentence generation');
-                      } else {
-                      // AWAIT to ensure sentences are processed in order
-                      await generateAndQueueTTS(sentence);
-                      }
-                      
-                      // Update displayed text AFTER TTS is generated
-                      displayedResponse += sentence + " ";
-                      
-                      // Add assistant message only when we have content
-                      if (!assistantMessageAdded) {
-                        const assistantMessage: Message = { role: "assistant", content: displayedResponse.trim() };
-                        setMessages((prev) => [...prev, assistantMessage]);
-                        assistantMessageAdded = true;
-                      } else {
-                        // Update existing message with smooth transition
-                        setMessages((prev) => {
-                          const newMessages = [...prev];
-                          const lastMessage = newMessages[newMessages.length - 1];
-                          if (lastMessage && lastMessage.role === "assistant") {
-                            lastMessage.content = displayedResponse.trim();
-                          }
-                          return newMessages;
-                        });
-                      }
-                    }
-                    currentChunk = currentChunk.slice(sentenceEnd);
-                  } else {
-                    // Check for commas - only send if we have multiple commas (last one in sequence)
-                    const commaMatches = currentChunk.match(/(?<!\d),\s/g);
-                    if (commaMatches && commaMatches.length >= 2) {
-                      // Find the last comma
-                      const lastCommaIndex = currentChunk.lastIndexOf(',');
-                      if (lastCommaIndex !== -1) {
-                        const sentenceEnd = lastCommaIndex + 2; // comma + space
-                        const sentence = currentChunk.slice(0, sentenceEnd).trim();
-                        if (sentence) {
-                          if (ttsCancelledRef.current) {
-                            console.log('[TTS] Cancelled before comma sentence generation');
-                          } else {
-                            await generateAndQueueTTS(sentence);
-                          }
-                          displayedResponse += sentence + " ";
-                          
-                          if (!assistantMessageAdded) {
-                            const assistantMessage: Message = { role: "assistant", content: displayedResponse.trim() };
-                            setMessages((prev) => [...prev, assistantMessage]);
-                            assistantMessageAdded = true;
-                          } else {
-                            setMessages((prev) => {
-                              const newMessages = [...prev];
-                              const lastMessage = newMessages[newMessages.length - 1];
-                              if (lastMessage && lastMessage.role === "assistant") {
-                                lastMessage.content = displayedResponse.trim();
-                              }
-                              return newMessages;
-                            });
-                          }
-                        }
-                        currentChunk = currentChunk.slice(sentenceEnd);
-                      }
-                    }
-                  }
-                }
-
-                if (chunk.done) {
-                  // Ensure session ID is saved from the final chunk
-                  if (chunk.session_id && chunk.session_id !== sessionId) {
-                    setSessionId(chunk.session_id);
-                    console.log(`[DEBUG] Session ID saved from final chunk: ${chunk.session_id}`);
-                  }
-                  break;
-                }
-              }
-
-              // Queue remaining text
-              if (currentChunk.trim()) {
-                // AWAIT to ensure final chunk is processed in order
-                if (ttsCancelledRef.current) {
-                  console.log('[TTS] Cancelled before final chunk generation');
-                } else {
-                  await generateAndQueueTTS(currentChunk.trim());
-                }
-                
-                // Update displayed text with remaining content AFTER TTS
-                displayedResponse += currentChunk.trim();
-                
-                // Handle final chunk
-                if (!assistantMessageAdded) {
-                  const assistantMessage: Message = { role: "assistant", content: displayedResponse.trim() };
-                  setMessages((prev) => [...prev, assistantMessage]);
-                  assistantMessageAdded = true;
-                } else {
-                  setMessages((prev) => {
-                    const newMessages = [...prev];
-                    const lastMessage = newMessages[newMessages.length - 1];
-                    if (lastMessage && lastMessage.role === "assistant") {
-                      lastMessage.content = displayedResponse.trim();
-                    }
-                    return newMessages;
-                  });
-                }
-              }
-
-              // Wait for audio queue to finish
-              await new Promise<void>((resolve) => {
-                const checkQueue = () => {
-                  if (ttsCancelledRef.current) {
-                    console.log('[QUEUE] Cancellation flag set - resolving early');
-                    resolve();
-                    return;
-                  }
-                  if (audioQueueRef.current.getQueueLength() === 0 && !audioQueueRef.current.getIsPlaying()) {
-                    resolve();
-                  } else {
-                    setTimeout(checkQueue, 500);
-                  }
-                };
-                checkQueue();
-              });
-
-              setStatus("idle");
-              isProcessingRef.current = false; // Reset processing flag
-              // Adaptive heuristic update AFTER error or cancel: keep previous effective mode
-            } catch (error) {
-              console.error("Chat stream error:", error);
-              setStatus("idle");
-              isProcessingRef.current = false; // Reset processing flag on error
-            }
-
-            // --- Adaptive Mode Heuristic Update (at end of processing) ---
-            if (vadMode === 'adaptive') {
-              const now = Date.now();
-              const start = lastSpeechStartRef.current;
-              const durationMs = start ? (now - start) : 0;
-              const recentWindowMs = 120000; // 2 minutes
-              const recentInterruptions = interruptionTimestampsRef.current.filter(t => t >= now - recentWindowMs).length;
-              let nextMode: 'ultra' | 'fast' | 'balanced' | 'reliable' = adaptiveEffectiveMode;
-              if (recentInterruptions >= 4) {
-                nextMode = 'ultra';
-              } else if (durationMs < 1200) {
-                nextMode = 'ultra';
-              } else if (durationMs < 2500) {
-                nextMode = 'fast';
-              } else if (durationMs < 5000) {
-                nextMode = 'balanced';
-              } else {
-                nextMode = 'reliable';
-              }
-              if (nextMode !== adaptiveEffectiveMode) {
-                console.log(`[AdaptiveVAD] duration=${Math.round(durationMs)}ms interruptions=${recentInterruptions} switching ${adaptiveEffectiveMode} -> ${nextMode}`);
-                setAdaptiveEffectiveMode(nextMode);
-              } else {
-                console.log(`[AdaptiveVAD] duration=${Math.round(durationMs)}ms interruptions=${recentInterruptions} keeping mode ${nextMode}`);
-              }
-            }
-          },
-        });
-
-        vadRef.current = myvad;
-        setIsVadReady(true);
-      } catch (error) {
-        console.error("Error initializing VAD:", error);
-      }
-    };
-
-    initVAD();
-
-    return () => {
-      if (vadRef.current?.destroy) {
-        vadRef.current.destroy();
-      }
-    };
-  }, [messages, language, sessionId, float32ToWav, generateAndQueueTTS, vadMode, adaptiveEffectiveMode]);
 
   // Auto-scroll messages
   useEffect(() => {
@@ -608,11 +546,11 @@ export default function VoiceAssistant() {
   }, [messages]);
 
   const toggleListening = () => {
-    if (!vadRef.current || !isVadReady) return;
+    if (!vadReady || !vadInstance) return;
 
     if (isListening) {
       // Stop listening
-      vadRef.current.pause();
+      vadInstance.pause();
       setIsListening(false);
       isListeningRef.current = false; // Update ref
       setStatus("idle");
@@ -635,7 +573,8 @@ export default function VoiceAssistant() {
       console.log('[FLAGS] ttsCancelledRef:', ttsCancelledRef.current, 'streamingCancelledRef:', streamingCancelledRef.current);
     } else {
       // Start listening
-      vadRef.current.start();
+      console.log("🎤 Starting VAD...", { vadReady, vadError });
+      vadInstance.start();
       setIsListening(true);
       isListeningRef.current = true; // Update ref
       // Reset cancellation flags when user starts fresh listening session
@@ -689,9 +628,11 @@ export default function VoiceAssistant() {
     };
 
     return (
+      <div>
       <p className="text-2xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent">
         {getLabel()}
       </p>
+</div>
     );
   };
 
@@ -817,7 +758,7 @@ export default function VoiceAssistant() {
               <div className="flex gap-4 mb-10">
                 <button
                   onClick={toggleListening}
-                  disabled={!isVadReady}
+                  disabled={!vadReady}
                   className={`px-10 py-4 rounded-full font-semibold text-lg transition-all transform duration-200 flex items-center gap-2 ${
                     isListening
                       ? "bg-red-600 hover:bg-red-700 shadow-xl shadow-red-500/50 hover:scale-110 active:scale-95"

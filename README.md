@@ -56,7 +56,18 @@ npm run dev
 Multi-language text-to-speech using Piper. See `tts-server/README.md` for details.
 
 ### STT Server (Port 5200)
-Speech-to-text transcription service (currently using external FastWhisper API).
+Speech-to-text transcription service. Additionally the LLM server now exposes a faster-whisper endpoint (`/stt/fast`) for low-latency transcription.
+
+#### Faster STT (LLM Server `/stt/fast`)
+Configure the frontend to use the faster mode by setting:
+```bash
+NEXT_PUBLIC_FAST_STT_URL=http://localhost:11435/stt/fast
+```
+Optionally set default mode:
+```bash
+NEXT_PUBLIC_DEFAULT_STT_MODE=fast   # or 'original'
+```
+In the UI you can toggle between "Fast (faster-whisper)" and "Original" STT modes. The fast mode falls back automatically if the endpoint fails.
 
 ### Voice Assistant (Port 3000)
 Next.js web application with VAD, streaming AI, and audio playback. See `voice-assistant-nextjs/README.md`.

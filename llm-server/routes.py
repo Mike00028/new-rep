@@ -5,7 +5,7 @@ import json
 import uuid
 import logging
 from datetime import datetime
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -14,6 +14,7 @@ from session_manager import sessions, delete_session_file
 from workflow import get_workflow
 from conversation_memory import load_conversation_history, save_messages
 from config import DEFAULT_MODEL
+from stt_fast import transcribe_audio_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,39 @@ def delete_session_endpoint(session_id: str):
         logger.info(f"Deleted session: {session_id}")
         return {"message": "Session deleted"}
     raise HTTPException(status_code=404, detail="Session not found")
+
+
+async def fast_stt_endpoint(
+    file: UploadFile = File(...),
+    language: str | None = Form(None),
+    task: str = Form("transcribe"),
+):
+    """High-speed speech-to-text using faster-whisper.
+
+    Accepts an audio file (wav/mp3/ogg/webm) and returns JSON transcription.
+    Parameters:
+      language: optional language code (e.g. 'en'); if omitted model auto-detects.
+      task: 'transcribe' (default) or 'translate'.
+    """
+    try:
+        if file is None:
+            raise HTTPException(status_code=400, detail="No file provided")
+        data = await file.read()
+        if not data:
+            raise HTTPException(status_code=400, detail="Empty file")
+        result = transcribe_audio_bytes(data, language=language, task=task)
+        return {
+            "text": result["text"],
+            "language": result["language"],
+            "segments": result["segments"],
+            "model": "faster-whisper",
+            "task": task,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Fast STT error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def chat_stream_endpoint(request: ChatRequest):
@@ -202,3 +236,5 @@ async def chat_stream_endpoint(request: ChatRequest):
             "X-Session-ID": session_id,
         }
     )
+
+

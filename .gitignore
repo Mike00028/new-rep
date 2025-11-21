@@ -29,11 +29,19 @@ env/
 **/piper/
 
 # Next.js
-voice-assistant-nextjs/public/
 voice-assistant-nextjs/.next/
 voice-assistant-nextjs/out/
 voice-assistant-nextjs/build/
 voice-assistant-nextjs/.env*.local
+
+# Ignore most public files but allow VAD files for offline operation
+voice-assistant-nextjs/public/*
+!voice-assistant-nextjs/public/vad/
+!voice-assistant-nextjs/public/vad-models/
+!voice-assistant-nextjs/public/onnx-runtime/
+!voice-assistant-nextjs/public/*.js
+!voice-assistant-nextjs/public/*.onnx
+!voice-assistant-nextjs/public/*.wasm
 
 # Log files
 **/*.log

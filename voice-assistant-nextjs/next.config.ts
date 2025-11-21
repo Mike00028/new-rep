@@ -12,6 +12,29 @@ const nextConfig: NextConfig = {
     'NEXT_PUBLIC_SESSION_DELETE_URL': process.env.NEXT_PUBLIC_SESSION_DELETE_URL,
     'NEXT_PUBLIC_BASE_URL': process.env.NEXT_PUBLIC_BASE_URL,
   },
+  // Add headers for WASM files
+  async headers() {
+    return [
+      {
+        source: '/:path*.wasm',
+        headers: [
+          {
+            key: 'Content-Type',
+            value: 'application/wasm',
+          },
+        ],
+      },
+      {
+        source: '/:path*.onnx',
+        headers: [
+          {
+            key: 'Content-Type',
+            value: 'application/octet-stream',
+          },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

@@ -58,7 +58,7 @@ def get_cached_model(model_name: str):
 logger.info("Pre-loading tiny model for maximum speed...")
 get_cached_model("tiny")
 logger.info("Pre-loading base model for balanced performance...")
-get_cached_model("base")
+get_cached_model("distil-medium.en")
 
 def process_file_sync(file_content: bytes, filename: str, model, initial_prompt: str, language: str, word_timestamps: bool, vad_filter: bool, min_silence_duration_ms: int):
     """Optimized synchronous file processing with minimal I/O overhead"""
