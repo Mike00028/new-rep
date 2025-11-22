@@ -26,11 +26,27 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/* Local VAD files for offline operation */}
+        {/* Configure ONNX Runtime WASM paths */}
+        <Script
+          id="ort-config"
+          strategy="beforeInteractive"
+        >
+          {`
+            if (typeof window !== 'undefined') {
+              window.ort = window.ort || {};
+              window.ort.env = window.ort.env || {};
+              window.ort.env.wasm = window.ort.env.wasm || {};
+              window.ort.env.wasm.wasmPaths = '/vad/';
+              window.ort.env.logLevel = 'error';
+            }
+          `}
+        </Script>
+        {/* ONNX Runtime for VAD */}
         <Script
           src="/vad/ort.wasm.min.js"
           strategy="beforeInteractive"
         />
+        {/* VAD Library */}
         <Script
           src="/vad/bundle.min.js"
           strategy="beforeInteractive"

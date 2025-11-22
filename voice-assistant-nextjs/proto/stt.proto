@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package stt;
+
+// Speech-to-Text service definition
+service SpeechToText {
+  // Single audio transcription
+  rpc Transcribe(TranscribeRequest) returns (TranscribeResponse);
+  
+  // Streaming audio transcription
+  rpc StreamingTranscribe(stream StreamingTranscribeRequest) returns (stream StreamingTranscribeResponse);
+  
+  // Get supported models and languages
+  rpc GetCapabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+}
+
+// Request message for single transcription
+message TranscribeRequest {
+  bytes audio_data = 1;
+  string model = 2;           // Optional: whisper model to use (e.g., "distil-large-v2")
+  string language = 3;        // Optional: language code (e.g., "en", "es")
+  string response_format = 4; // Optional: "text" or "verbose_json"
+  repeated string timestamp_granularities = 5; // Optional: "segment" or "word"
+  bool word_timestamps = 6;   // Optional: include word-level timestamps
+  float temperature = 7;      // Optional: sampling temperature
+  float vad_threshold = 8;    // Optional: voice activity detection threshold
+}
+
+// Response message for single transcription
+message TranscribeResponse {
+  string text = 1;
+  string language = 2;
+  float duration = 3;
+  repeated Segment segments = 4;
+  repeated Word words = 5;
+  bool success = 6;
+  string error_message = 7;
+}
+
+// Request message for streaming transcription
+message StreamingTranscribeRequest {
+  oneof request_type {
+    StreamingConfig config = 1;
+    bytes audio_chunk = 2;
+  }
+}
+
+// Streaming configuration
+message StreamingConfig {
+  string model = 1;
+  string language = 2;
+  bool interim_results = 3;
+  float vad_threshold = 4;
+  bool word_timestamps = 5;
+}
+
+// Response message for streaming transcription
+message StreamingTranscribeResponse {
+  string text = 1;
+  bool is_final = 2;
+  repeated Segment segments = 3;
+  repeated Word words = 4;
+  float confidence = 5;
+  string error_message = 6;
+}
+
+// Segment with timestamps
+message Segment {
+  int32 id = 1;
+  float start = 2;
+  float end = 3;
+  string text = 4;
+  repeated int32 tokens = 5;
+  float temperature = 6;
+  float avg_logprob = 7;
+  float compression_ratio = 8;
+  float no_speech_prob = 9;
+}
+
+// Word with timestamps
+message Word {
+  string word = 1;
+  float start = 2;
+  float end = 3;
+  float probability = 4;
+}
+
+// Capabilities request
+message CapabilitiesRequest {
+  // Empty for now, can be extended later
+}
+
+// Capabilities response
+message CapabilitiesResponse {
+  repeated string supported_models = 1;
+  repeated string supported_languages = 2;
+  repeated string supported_formats = 3;
+  repeated string supported_response_formats = 4;
+  repeated string supported_timestamp_granularities = 5;
+}

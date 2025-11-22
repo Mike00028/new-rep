@@ -1,0 +1,66 @@
+// gRPC TTS Server Protocol Buffer Definition
+syntax = "proto3";
+
+package tts;
+
+// TTS service definition
+service TextToSpeech {
+  // Single synthesis request
+  rpc Synthesize(SynthesizeRequest) returns (SynthesizeResponse);
+  
+  // Streaming synthesis for real-time audio generation
+  rpc StreamingSynthesize(SynthesizeRequest) returns (stream AudioChunk);
+  
+  // Get available voices and capabilities
+  rpc GetVoices(GetVoicesRequest) returns (GetVoicesResponse);
+}
+
+// Request message for synthesis
+message SynthesizeRequest {
+  string text = 1;
+  string voice = 2;          // e.g., "en_US-amy-medium"
+  string language = 3;       // e.g., "en"
+  float speed = 4;           // Speech rate (0.5 to 2.0)
+  float pitch = 5;           // Pitch adjustment (-20 to 20)
+  string output_format = 6;  // "wav", "mp3", "ogg"
+  int32 sample_rate = 7;     // 16000, 22050, 44100
+}
+
+// Response message for single synthesis
+message SynthesizeResponse {
+  bytes audio_data = 1;
+  float duration = 2;        // Duration in seconds
+  int32 sample_rate = 3;
+  string format = 4;
+  bool success = 5;
+  string error_message = 6;
+}
+
+// Streaming audio chunk
+message AudioChunk {
+  bytes audio_data = 1;
+  bool is_final = 2;         // True for the last chunk
+  float timestamp = 3;       // Position in seconds
+  string error_message = 4;
+}
+
+// Request for available voices
+message GetVoicesRequest {
+  string language = 1;       // Filter by language (optional)
+}
+
+// Available voice information
+message Voice {
+  string name = 1;           // e.g., "en_US-amy-medium"
+  string language = 2;       // e.g., "en_US"
+  string gender = 3;         // "male", "female", "neutral"
+  string quality = 4;        // "low", "medium", "high"
+  repeated int32 sample_rates = 5;
+}
+
+// Response with available voices
+message GetVoicesResponse {
+  repeated Voice voices = 1;
+  bool success = 2;
+  string error_message = 3;
+}

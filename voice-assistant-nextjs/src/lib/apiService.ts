@@ -106,23 +106,38 @@ export async function* generateChatStream(
   sessionId?: string,
   signal?: AbortSignal
 ): AsyncGenerator<StreamChunk, void, unknown> {
+  console.log("🌊 DEBUG: generateChatStream called with:");
+  console.log("🌊 DEBUG: Messages:", messages);
+  console.log("🌊 DEBUG: Language:", language);
+  console.log("🌊 DEBUG: Session ID:", sessionId);
+  console.log("🌊 DEBUG: LLM Server URL:", LLM_SERVER_URL);
+  
   try {
+    const requestBody = {
+      messages: messages,
+      language: language,
+      model: MODEL_NAME,
+      session_id: sessionId,
+    };
+    
+    console.log("🌊 DEBUG: Request body:", JSON.stringify(requestBody, null, 2));
+    
     const response = await fetch(LLM_SERVER_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        messages: messages,
-        language: language,
-        model: MODEL_NAME,
-        session_id: sessionId,
-      }),
+      body: JSON.stringify(requestBody),
       signal,
     });
+    
+    console.log("🌊 DEBUG: Response status:", response.status);
+    console.log("🌊 DEBUG: Response headers:", Object.fromEntries(response.headers.entries()));
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      const errorText = await response.text();
+      console.error("🌊 DEBUG: HTTP error response:", errorText);
+      throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
     }
 
     const reader = response.body?.getReader();
@@ -132,30 +147,45 @@ export async function* generateChatStream(
       throw new Error('No reader available');
     }
 
+    console.log("🌊 DEBUG: Starting to read stream chunks...");
+    let chunkIndex = 0;
+    
     while (true) {
+      chunkIndex++;
+      console.log(`🌊 DEBUG: Reading chunk ${chunkIndex}...`);
       const { done, value } = await reader.read();
       
+      console.log(`🌊 DEBUG: Chunk ${chunkIndex} - done: ${done}, value length: ${value?.length || 0}`);
+      
       if (done) {
+        console.log("🌊 DEBUG: Stream completed (done=true)");
         yield { text: '', done: true };
         break;
       }
 
       const chunk = decoder.decode(value);
+      console.log(`🌊 DEBUG: Raw chunk ${chunkIndex}:`, chunk);
+      
       const lines = chunk.split('\n').filter(line => line.trim());
+      console.log(`🌊 DEBUG: Chunk ${chunkIndex} lines:`, lines);
 
       for (const line of lines) {
         // SSE format: "data: {...}"
         if (line.startsWith('data: ')) {
           try {
             const jsonStr = line.substring(6); // Remove "data: " prefix
+            console.log(`🌊 DEBUG: Parsing JSON:`, jsonStr);
+            
             const data = JSON.parse(jsonStr);
+            console.log(`🌊 DEBUG: Parsed data:`, data);
             
             if (data.error) {
-              console.error('LLM Server error:', data.error);
+              console.error('🌊 DEBUG: LLM Server error:', data.error);
               throw new Error(data.error);
             }
             
             if (data.text) {
+              console.log(`🌊 DEBUG: Yielding text:`, data.text);
               yield {
                 text: data.text,
                 done: data.done || false,
@@ -163,17 +193,22 @@ export async function* generateChatStream(
             }
             
             if (data.done) {
+              console.log("🌊 DEBUG: Stream marked as done in data");
               yield { text: '', done: true };
               return;
             }
           } catch (e) {
-            console.error('Error parsing SSE data:', e);
+            console.error('🌊 DEBUG: Error parsing SSE data:', e, 'Line:', line);
           }
+        } else {
+          console.log(`🌊 DEBUG: Skipping non-data line:`, line);
         }
       }
     }
   } catch (error) {
-    console.error('Chat stream error:', error);
+    console.error('🌊 DEBUG: Chat stream error:', error);
+    console.error('🌊 DEBUG: Error type:', typeof error);
+    console.error('🌊 DEBUG: Error message:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }

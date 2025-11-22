@@ -46,3 +46,4 @@ app.post("/stt/fast")(fast_stt_endpoint)
 if __name__ == "__main__":
     logger.info("Starting LLM Server on port 11435")
     uvicorn.run(app, host="0.0.0.0", port=11435)
+p

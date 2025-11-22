@@ -10,23 +10,30 @@
     "start": "next start",
     "start:local": "cp  .env && next start",
     "start:prod": "cp .env.production .env && next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "websocket": "node websocket-server.js",
+    "dev:realtime": "concurrently \"npm run dev\" \"npm run websocket\""
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.1",
+    "@grpc/proto-loader": "^0.8.0",
     "@ricky0123/vad-react": "^0.0.35",
     "@tailwindcss/typography": "^0.5.19",
     "axios": "^1.13.2",
     "marked": "^17.0.0",
     "next": "16.0.3",
     "react": "19.2.0",
-    "react-dom": "19.2.0"
+    "react-dom": "19.2.0",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
     "autoprefixer": "^10.4.20",
     "babel-plugin-react-compiler": "1.0.0",
+    "concurrently": "^8.2.2",
     "eslint": "^9",
     "eslint-config-next": "16.0.3",
     "postcss": "^8.4.49",

@@ -1,0 +1,6 @@
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+faster-whisper
+torch>=2.0.0
+numpy
+protobuf>=4.21.0
